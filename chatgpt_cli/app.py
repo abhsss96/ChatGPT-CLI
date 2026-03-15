@@ -1,9 +1,11 @@
 from __future__ import annotations
+from datetime import datetime
 from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -17,13 +19,34 @@ from textual.widgets import (
     Markdown,
     Select,
     Static,
+    TextArea,
 )
 from textual import on, work
+from textual.worker import Worker
 
 from . import api, storage
 from .config import get_api_key, get_model, save_api_key, save_model
 
 MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+
+
+def _relative_time(iso_str: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        diff = datetime.now() - dt
+        seconds = diff.total_seconds()
+        if seconds < 60:
+            return "just now"
+        elif seconds < 3600:
+            return f"{int(seconds / 60)}m ago"
+        elif seconds < 86400:
+            return f"{int(seconds / 3600)}h ago"
+        elif seconds < 604800:
+            return f"{int(seconds / 86400)}d ago"
+        else:
+            return dt.strftime("%b %d")
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -139,9 +162,86 @@ class ModelScreen(ModalScreen[Optional[str]]):
         self.dismiss(None)
 
 
+class SystemPromptScreen(ModalScreen[Optional[str]]):
+    """Modal to set a system prompt for the current conversation."""
+
+    DEFAULT_CSS = """
+    SystemPromptScreen {
+        align: center middle;
+    }
+    #sp-dialog {
+        width: 72;
+        height: auto;
+        background: $surface;
+        border: thick $primary;
+        padding: 2 4;
+    }
+    #sp-dialog Label {
+        margin-bottom: 1;
+    }
+    #sp-dialog .hint {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    #sp-textarea {
+        height: 8;
+        margin-bottom: 1;
+    }
+    #sp-btns {
+        height: auto;
+        align: right middle;
+    }
+    #sp-btns Button {
+        margin-left: 1;
+    }
+    """
+
+    def __init__(self, current_prompt: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._current_prompt = current_prompt
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sp-dialog"):
+            yield Label("[bold]System Prompt[/bold]")
+            yield Label(
+                "Sets the AI's behavior for this conversation. Leave blank to use no system prompt.",
+                classes="hint",
+            )
+            yield TextArea(self._current_prompt, id="sp-textarea")
+            with Horizontal(id="sp-btns"):
+                yield Button("Save", variant="primary", id="sp-save-btn")
+                yield Button("Clear", variant="warning", id="sp-clear-btn")
+                yield Button("Cancel", id="sp-cancel-btn")
+
+    @on(Button.Pressed, "#sp-save-btn")
+    def _save(self) -> None:
+        text = self.query_one("#sp-textarea", TextArea).text.strip()
+        self.dismiss(text)
+
+    @on(Button.Pressed, "#sp-clear-btn")
+    def _clear(self) -> None:
+        self.dismiss("")
+
+    @on(Button.Pressed, "#sp-cancel-btn")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ---------------------------------------------------------------------------
 # Widgets
 # ---------------------------------------------------------------------------
+
+
+class MessageInput(TextArea):
+    """Multi-line message input. Ctrl+Enter submits."""
+
+    BINDINGS = [Binding("ctrl+enter", "submit_message", "Send", show=False)]
+
+    class Submit(Message):
+        pass
+
+    def action_submit_message(self) -> None:
+        self.post_message(self.Submit())
 
 
 class ChatMessage(Static):
@@ -183,7 +283,7 @@ class ChatMessage(Static):
     def compose(self) -> ComposeResult:
         name = "You" if self.role == "user" else "ChatGPT"
         yield Label(name, classes="role-label")
-        yield Markdown(self._content or "\u200b")  # zero-width space keeps height
+        yield Markdown(self._content or "\u200b")
 
     def update_content(self, content: str) -> None:
         self._content = content
@@ -193,14 +293,17 @@ class ChatMessage(Static):
 class ConversationItem(ListItem):
     """Sidebar list item for a conversation."""
 
-    def __init__(self, conv_id: str, title: str, **kwargs) -> None:
+    def __init__(self, conv_id: str, title: str, updated_at: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
         self.conv_id = conv_id
         self._title = title
+        self._updated_at = updated_at
 
     def compose(self) -> ComposeResult:
-        label = self._title if len(self._title) <= 24 else self._title[:21] + "..."
+        label = self._title if len(self._title) <= 22 else self._title[:19] + "..."
         yield Label(label)
+        if self._updated_at:
+            yield Label(_relative_time(self._updated_at), classes="conv-time")
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +343,7 @@ class ChatApp(App):
     #conversations > ListItem { background: transparent; padding: 0 1; }
     #conversations > ListItem:hover { background: $primary-darken-3; }
     #conversations > ListItem.--highlight { background: $primary-darken-2; }
+    .conv-time { color: $text-muted; text-style: italic; }
 
     /* Chat area */
     #chat-area { width: 1fr; }
@@ -256,13 +360,26 @@ class ChatApp(App):
     /* Input bar */
     #input-area {
         height: auto;
-        min-height: 5;
+        min-height: 7;
         border-top: solid $border;
-        padding: 1;
-        align: left bottom;
+        padding: 1 1 0 1;
     }
-    #message-input { width: 1fr; margin-right: 1; }
+    #message-input {
+        height: 5;
+        width: 1fr;
+        margin-bottom: 1;
+    }
+    #input-buttons {
+        height: auto;
+        align: right middle;
+    }
+    #stop-btn { width: 8; margin-right: 1; display: none; }
     #send-btn { width: 8; }
+    #input-hint {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
 
     /* Status bar */
     #status-bar {
@@ -279,12 +396,19 @@ class ChatApp(App):
         Binding("ctrl+n", "new_chat", "New Chat"),
         Binding("ctrl+m", "change_model", "Model"),
         Binding("ctrl+k", "focus_input", "Focus"),
+        Binding("ctrl+p", "system_prompt", "System Prompt"),
+        Binding("ctrl+x", "stop_generation", "Stop"),
         Binding("ctrl+d", "delete_chat", "Delete"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
     current_conv: reactive[Optional[dict]] = reactive(None)
     is_streaming: reactive[bool] = reactive(False)
+
+    def __init__(self, initial_prompt: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.initial_prompt = initial_prompt
+        self._current_worker: Optional[Worker] = None
 
     # ------------------------------------------------------------------
     # Compose & mount
@@ -303,12 +427,12 @@ class ChatApp(App):
                         "Select a conversation or press [bold]Ctrl+N[/bold] to start.",
                         id="welcome",
                     )
-                with Horizontal(id="input-area"):
-                    yield Input(
-                        placeholder="Message ChatGPT…  (Enter to send)",
-                        id="message-input",
-                    )
-                    yield Button("Send", id="send-btn", variant="primary")
+                with Vertical(id="input-area"):
+                    yield MessageInput("", id="message-input", language=None, show_line_numbers=False)
+                    with Horizontal(id="input-buttons"):
+                        yield Label("Ctrl+Enter to send  |  Ctrl+P system prompt", id="input-hint")
+                        yield Button("Stop", id="stop-btn", variant="error")
+                        yield Button("Send", id="send-btn", variant="primary")
         with Horizontal(id="status-bar"):
             yield Label("", id="status-label")
         yield Footer()
@@ -318,14 +442,32 @@ class ChatApp(App):
         if not get_api_key():
             self.push_screen(ApiKeyScreen(), self._on_api_key)
         else:
-            self.query_one("#message-input", Input).focus()
+            self.query_one(MessageInput).focus()
+            if self.initial_prompt:
+                self.set_timer(0.2, self._send_initial_prompt)
 
     def _on_api_key(self, key: Optional[str]) -> None:
         if key:
             self.notify("API key saved!", severity="information")
-            self.query_one("#message-input", Input).focus()
+            self.query_one(MessageInput).focus()
+            if self.initial_prompt:
+                self.set_timer(0.2, self._send_initial_prompt)
         else:
             self.notify("No API key — set OPENAI_API_KEY env var.", severity="warning")
+
+    def _send_initial_prompt(self) -> None:
+        self._send(self.initial_prompt)
+
+    # ------------------------------------------------------------------
+    # Reactive watchers
+    # ------------------------------------------------------------------
+
+    def watch_is_streaming(self, streaming: bool) -> None:
+        try:
+            self.query_one("#send-btn", Button).disabled = streaming
+            self.query_one("#stop-btn", Button).display = streaming
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Sidebar helpers
@@ -335,7 +477,7 @@ class ChatApp(App):
         lv = self.query_one("#conversations", ListView)
         lv.clear()
         for conv in storage.load_conversations():
-            lv.append(ConversationItem(conv["id"], conv["title"]))
+            lv.append(ConversationItem(conv["id"], conv["title"], conv.get("updated_at", "")))
 
     # ------------------------------------------------------------------
     # Chat helpers
@@ -363,7 +505,7 @@ class ChatApp(App):
     def action_new_chat(self) -> None:
         self.current_conv = storage.new_conversation()
         self._clear_messages()
-        self.query_one("#message-input", Input).focus()
+        self.query_one(MessageInput).focus()
         self._set_status("New conversation")
 
     @on(ListView.Selected, "#conversations")
@@ -375,24 +517,25 @@ class ChatApp(App):
                 self.current_conv = conv
                 self._render_conversation(conv)
                 self._set_status(f"Loaded: {conv['title']}")
-                self.query_one("#message-input", Input).focus()
+                self.query_one(MessageInput).focus()
 
     @on(Button.Pressed, "#send-btn")
-    @on(Input.Submitted, "#message-input")
+    @on(MessageInput.Submit)
     def _on_send(self) -> None:
-        if self.is_streaming:
-            return
-        inp = self.query_one("#message-input", Input)
-        text = inp.value.strip()
+        inp = self.query_one(MessageInput)
+        text = inp.text.strip()
         if not text:
             return
-        inp.value = ""
+        inp.clear()
+        self._send(text)
 
-        # Ensure we have a conversation
+    def _send(self, text: str) -> None:
+        if self.is_streaming or not text:
+            return
+
         if not self.current_conv:
             self.current_conv = storage.new_conversation()
 
-        # Remove welcome widget if present
         for w in self.query("#welcome"):
             w.remove()
 
@@ -401,22 +544,21 @@ class ChatApp(App):
 
         self.current_conv["messages"].append({"role": "user", "content": text})
 
-        # Auto-title from first message
         if len(self.current_conv["messages"]) == 1:
-            self.current_conv["title"] = text[:40] + ("…" if len(text) > 40 else "")
+            self.current_conv["title"] = text[:40] + ("\u2026" if len(text) > 40 else "")
 
         assistant_widget = ChatMessage("assistant", "")
         scroll.mount(assistant_widget)
         scroll.scroll_end(animate=False)
 
-        self._stream_response(assistant_widget)
+        self._current_worker = self._stream_response(assistant_widget)
 
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
     def action_focus_input(self) -> None:
-        self.query_one("#message-input", Input).focus()
+        self.query_one(MessageInput).focus()
 
     def action_change_model(self) -> None:
         self.push_screen(ModelScreen(), self._on_model_selected)
@@ -426,6 +568,27 @@ class ChatApp(App):
             save_model(model)
             self.sub_title = f"Model: {model}"
             self.notify(f"Model changed to {model}")
+
+    def action_system_prompt(self) -> None:
+        if not self.current_conv:
+            self.notify("Start or select a conversation first.", severity="warning")
+            return
+        current = self.current_conv.get("system_prompt", "")
+        self.push_screen(SystemPromptScreen(current_prompt=current), self._on_system_prompt)
+
+    def _on_system_prompt(self, prompt: Optional[str]) -> None:
+        if prompt is None:
+            return
+        if self.current_conv:
+            self.current_conv["system_prompt"] = prompt
+            storage.save_conversation(self.current_conv)
+            label = f"System prompt {'set' if prompt else 'cleared'}"
+            self.notify(label, severity="information")
+
+    def action_stop_generation(self) -> None:
+        if self._current_worker and self.is_streaming:
+            self._current_worker.cancel()
+            self._set_status("Stopped.")
 
     def action_delete_chat(self) -> None:
         if not self.current_conv:
@@ -450,10 +613,10 @@ class ChatApp(App):
     @work(exclusive=True)
     async def _stream_response(self, widget: ChatMessage) -> None:
         self.is_streaming = True
-        self.query_one("#send-btn", Button).disabled = True
-        self._set_status("ChatGPT is thinking…")
+        self._set_status("ChatGPT is thinking\u2026")
 
         full_text = ""
+        usage_out: list = []
         scroll = self.query_one("#messages", VerticalScroll)
 
         try:
@@ -461,7 +624,8 @@ class ChatApp(App):
                 {"role": m["role"], "content": m["content"]}
                 for m in self.current_conv["messages"]
             ]
-            async for token in api.stream_chat(messages):
+            system_prompt = self.current_conv.get("system_prompt", "")
+            async for token in api.stream_chat(messages, system_prompt=system_prompt, usage_out=usage_out):
                 full_text += token
                 widget.update_content(full_text)
                 scroll.scroll_end(animate=False)
@@ -479,9 +643,15 @@ class ChatApp(App):
                 self._refresh_sidebar()
 
             self.is_streaming = False
-            self.query_one("#send-btn", Button).disabled = False
-            self._set_status(f"Model: {get_model()}")
-            self.query_one("#message-input", Input).focus()
+            if usage_out:
+                usage = usage_out[-1]
+                self._set_status(
+                    f"Model: {get_model()} | Tokens: {usage.total_tokens} "
+                    f"(prompt: {usage.prompt_tokens}, completion: {usage.completion_tokens})"
+                )
+            else:
+                self._set_status(f"Model: {get_model()}")
+            self.query_one(MessageInput).focus()
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +660,20 @@ class ChatApp(App):
 
 
 def main() -> None:
-    ChatApp().run()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="chatgpt",
+        description="ChatGPT CLI — a developer-friendly AI in your terminal.",
+    )
+    parser.add_argument(
+        "prompt",
+        nargs="?",
+        default="",
+        help="Optional initial prompt to send immediately on startup.",
+    )
+    args = parser.parse_args()
+    ChatApp(initial_prompt=args.prompt).run()
 
 
 if __name__ == "__main__":

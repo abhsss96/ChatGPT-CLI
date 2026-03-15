@@ -20,6 +20,7 @@ def new_conversation(title: str = "New Chat") -> dict:
         "title": title,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
+        "system_prompt": "",
         "messages": [],
     }
 
