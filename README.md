@@ -2,12 +2,35 @@
 
 A developer-friendly ChatGPT terminal UI built with [Textual](https://textual.textualize.io/). Chat with OpenAI models directly from your terminal — with conversation history, model switching, and a clean keyboard-driven interface.
 
+## Screenshots
+
+**Main chat view** — streaming responses with sidebar conversation history and relative timestamps
+
+![Main chat view](screenshots/main-chat.svg)
+
+**Multiline input** — write multi-line messages with the TextArea input (Ctrl+Enter to send)
+
+![Multiline input](screenshots/multiline-input.svg)
+
+**Conversation history** — browse and resume past conversations from the sidebar
+
+![Conversation history](screenshots/conversation-history.svg)
+
+**Sidebar overview** — full layout with recents panel and token usage in the status bar
+
+![Sidebar overview](screenshots/sidebar-overview.svg)
+
 ## Features
 
 - **Streaming responses** — see tokens as they arrive, just like the web UI
+- **Multiline input** — write multi-line messages; `Ctrl+Enter` to send
+- **Stop generation** — cancel a response mid-stream with `Ctrl+X`
+- **System prompt** — set a custom persona per conversation with `Ctrl+P`
+- **Token usage** — prompt and completion token count shown after every response
 - **Persistent conversations** — all chats saved locally as JSON files
 - **Model switching** — switch between GPT models without leaving the app
-- **Sidebar** — browse and resume previous conversations
+- **Sidebar with timestamps** — browse and resume previous conversations with relative times
+- **CLI argument** — `chatgpt "your question"` starts a chat immediately
 - **First-run onboarding** — prompts for your API key on first launch
 - **Keyboard-first** — no mouse required
 
@@ -38,6 +61,12 @@ pip install .
 chatgpt
 ```
 
+Or start with an initial prompt directly:
+
+```bash
+chatgpt "explain async/await in Python"
+```
+
 On first launch, you'll be prompted to enter your OpenAI API key. It's saved to your local config and never leaves your machine.
 
 Alternatively, set the environment variable before running:
@@ -55,14 +84,16 @@ OPENAI_API_KEY=sk-...
 
 ## Keyboard Shortcuts
 
-| Key      | Action              |
-|----------|---------------------|
-| `Ctrl+N` | New conversation    |
-| `Ctrl+M` | Change model        |
-| `Ctrl+K` | Focus message input |
-| `Ctrl+D` | Delete conversation |
-| `Ctrl+Q` | Quit                |
-| `Enter`  | Send message        |
+| Key          | Action                        |
+|--------------|-------------------------------|
+| `Ctrl+Enter` | Send message                  |
+| `Ctrl+N`     | New conversation              |
+| `Ctrl+M`     | Change model                  |
+| `Ctrl+P`     | Set system prompt             |
+| `Ctrl+X`     | Stop generation               |
+| `Ctrl+K`     | Focus message input           |
+| `Ctrl+D`     | Delete conversation           |
+| `Ctrl+Q`     | Quit                          |
 
 ## Supported Models
 
